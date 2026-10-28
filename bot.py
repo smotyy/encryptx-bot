@@ -260,7 +260,7 @@ class EncryptXBot(commands.Bot):
     async def on_ready(self):
         log.info("Logged in as %s", self.user)
         await self.change_presence(activity=discord.Activity(
-            type=discord.ActivityType.watching, name="/status"))
+            type=discord.ActivityType.watching, name="Encrypting."))
 
     async def check_tool(self):
         if not TOOL_HEALTH_URL:
