@@ -34,6 +34,7 @@ TOOL_HEALTH_URL = os.getenv("TOOL_HEALTH_URL", "").strip()
 TOOL_HEALTH_TOKEN = os.getenv("TOOL_HEALTH_TOKEN", "").strip()
 RELEASE_CHANNEL_ID = int(os.getenv("RELEASE_CHANNEL_ID", "0") or 0)
 ANNOUNCE_ROLE_ID = int(os.getenv("ANNOUNCE_ROLE_ID", "0") or 0)
+WEBSITE_URL = os.getenv("WEBSITE_URL", "").strip()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("encryptx-bot")
@@ -834,6 +835,22 @@ async def rules_command(interaction: discord.Interaction):
         await interaction.response.send_message("You need Manage Server permission to publish rules.", ephemeral=True)
         return
     await interaction.response.send_modal(RulesModal())
+
+
+@bot.tree.command(name="website", description="Post a link to the download site.")
+@app_commands.default_permissions(administrator=True)
+async def website_command(interaction: discord.Interaction):
+    if not await require_admin(interaction):
+        return
+    if not WEBSITE_URL:
+        await interaction.response.send_message(
+            "No website URL is configured. Set WEBSITE_URL in the bot's environment first.", ephemeral=True)
+        return
+    row = discord.ui.ActionRow()
+    row.add_item(discord.ui.Button(label="Visit website", style=discord.ButtonStyle.link, url=WEBSITE_URL, emoji="🔗"))
+    view = Panel(f"{BRAND_NAME}", "Download the tool and join the Discord from one place.", row=row)
+    await interaction.channel.send(view=view)
+    await interaction.response.send_message("Website panel posted.", ephemeral=True)
 
 
 @bot.tree.command(name="status", description="View bot, server, and tool status.")
