@@ -32,6 +32,8 @@ STATUS_CHANNEL_ID = int(os.getenv("STATUS_CHANNEL_ID", "0") or 0)
 STATUS_MESSAGE_ID = int(os.getenv("STATUS_MESSAGE_ID", "1564810335871959071") or 0)
 TOOL_HEALTH_URL = os.getenv("TOOL_HEALTH_URL", "").strip()
 TOOL_HEALTH_TOKEN = os.getenv("TOOL_HEALTH_TOKEN", "").strip()
+RELEASE_CHANNEL_ID = int(os.getenv("RELEASE_CHANNEL_ID", "0") or 0)
+ANNOUNCE_ROLE_ID = int(os.getenv("ANNOUNCE_ROLE_ID", "0") or 0)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("encryptx-bot")
@@ -163,12 +165,16 @@ class Database:
             await con.execute("""CREATE TABLE IF NOT EXISTS entries (
                 message_id INTEGER NOT NULL, user_id INTEGER NOT NULL,
                 PRIMARY KEY(message_id, user_id))""")
+            await con.execute("""CREATE TABLE IF NOT EXISTS releases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, version TEXT NOT NULL, notes TEXT NOT NULL,
+                file_url TEXT, file_name TEXT, released_at TEXT NOT NULL, released_by INTEGER NOT NULL,
+                channel_id INTEGER, message_id INTEGER)""")
             defaults = {
                 "tool_status": "Not configured", "tool_version": "Not configured",
                 "tool_last_update": "Not configured", "tool_release_notes": "No release notes yet.",
                 "tool_last_check": "Never", "tool_last_success": "Never",
                 "status_message_id": str(STATUS_MESSAGE_ID or 0), "status_channel_id": str(STATUS_CHANNEL_ID or 0),
-                "ticket_counter": "0",
+                "release_channel_id": str(RELEASE_CHANNEL_ID or 0), "ticket_counter": "0",
             }
             for k, v in defaults.items():
                 await con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)", (k, v))
@@ -336,6 +342,44 @@ async def refresh_status_panel(channel=None):
     except (discord.HTTPException, discord.Forbidden):
         log.exception("Could not update status panel")
         return None
+
+
+async def announce_release(interaction, version, notes, attachment=None, channel_override=None, ping=True):
+    """Post a release announcement to the configured release channel, update the
+    saved tool info so the status panel reflects it, and log it in the database."""
+    guild = interaction.guild
+    channel = channel_override
+    if channel is None:
+        cid = int(await db.get("release_channel_id", "0") or 0) or RELEASE_CHANNEL_ID
+        channel = guild.get_channel(cid) if cid else None
+    if channel is None:
+        return None, "No release channel is set. Use `/release-channel` first, or pass `channel`."
+
+    file = await attachment.to_file() if attachment else None
+    sections = [
+        ("🏷️ Version", safe_text(version, 100)),
+        ("📅 Released", f"<t:{int(now().timestamp())}:F> (<t:{int(now().timestamp())}:R>)"),
+        ("📝 What's new", safe_text(notes, 1200)),
+    ]
+    if attachment:
+        sections.append(("📦 Download", f"[{attachment.filename}]({attachment.url})"))
+    content = f"<@&{ANNOUNCE_ROLE_ID}>" if (ping and ANNOUNCE_ROLE_ID) else None
+    view = Panel(f"🔐 {BRAND_NAME} | New Release",
+                sections=sections,
+                footer=f"Published by {interaction.user} • Always verify files came from this server before running them.")
+    message = await channel.send(content=content, view=view, file=file,
+                                 allowed_mentions=discord.AllowedMentions(roles=bool(ANNOUNCE_ROLE_ID)))
+
+    await db.set("tool_version", version)
+    await db.set("tool_last_update", now().strftime("%Y-%m-%d"))
+    await db.set("tool_release_notes", notes)
+    await db.execute(
+        "INSERT INTO releases(version,notes,file_url,file_name,released_at,released_by,channel_id,message_id) "
+        "VALUES(?,?,?,?,?,?,?,?)",
+        (version, notes, attachment.url if attachment else None, attachment.filename if attachment else None,
+         time_text(), interaction.user.id, channel.id, message.id))
+    await refresh_status_panel()
+    return message, None
 
 
 class EncryptXBot(commands.Bot):
@@ -872,6 +916,59 @@ async def tool_info(interaction: discord.Interaction):
         ("Last check", safe_text(await db.get("tool_last_check", "Never"), 100)),
         ("Last successful check", safe_text(await db.get("tool_last_success", "Never"), 100)),
     ])
+
+
+@bot.tree.command(name="release-channel", description="Set the channel where tool release announcements are posted.")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(channel="Channel to post release announcements in")
+async def release_channel(interaction: discord.Interaction, channel: discord.TextChannel):
+    if not await require_admin(interaction):
+        return
+    await db.set("release_channel_id", channel.id)
+    await interaction.response.send_message(f"Release announcements will be posted in {channel.mention}.", ephemeral=True)
+
+
+@bot.tree.command(name="tool-release", description="Announce a new tool release and update the status panel.")
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(
+    version="Version number, e.g. 2.4.0",
+    notes="What changed in this release",
+    file="Optional file for this release (installer, build, etc.)",
+    channel="Override the saved release channel for this announcement",
+    ping="Ping the announcement role (if configured). Default: on")
+async def tool_release(interaction: discord.Interaction, version: str, notes: str,
+                       file: discord.Attachment = None, channel: discord.TextChannel = None,
+                       ping: bool = True):
+    if not await require_admin(interaction):
+        return
+    version = version.strip()
+    if not version or len(version) > 100:
+        await interaction.response.send_message("Version must be 1–100 characters.", ephemeral=True)
+        return
+    if not notes.strip() or len(notes) > 1200:
+        await interaction.response.send_message("Notes must be 1–1200 characters.", ephemeral=True)
+        return
+    await interaction.response.defer(ephemeral=True)
+    message, error = await announce_release(interaction, version, notes.strip(), file, channel, ping)
+    if error:
+        await interaction.followup.send(error, ephemeral=True)
+        return
+    await interaction.followup.send(f"Release **{version}** announced: {message.jump_url}", ephemeral=True)
+
+
+@bot.tree.command(name="tool-releases", description="Show the most recent tool releases.")
+async def tool_releases(interaction: discord.Interaction):
+    rows = await db.all("SELECT version,released_at,released_by,channel_id,message_id FROM releases "
+                        "ORDER BY id DESC LIMIT 5")
+    if not rows:
+        await reply_panel(interaction, "Release history", "No releases have been announced yet.")
+        return
+    sections = []
+    for version, released_at, by, cid, mid in rows:
+        link = f"https://discord.com/channels/{interaction.guild_id}/{cid}/{mid}" if cid and mid else None
+        text = f"Released {released_at} by <@{by}>" + (f"\n[Jump to announcement]({link})" if link else "")
+        sections.append((f"🏷️ {version}", text))
+    await reply_panel(interaction, "Release history", sections=sections)
 
 
 @bot.tree.command(name="tool-check", description="Check the configured tool health URL.")
