@@ -13,6 +13,8 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
+# REQUIRES discord.py >= 2.6 (Components V2: LayoutView / Container / TextDisplay / Separator)
+
 load_dotenv()
 
 # Set DISCORD_TOKEN in your hosting panel. Never hard-code tokens here.
@@ -34,10 +36,12 @@ TOOL_HEALTH_TOKEN = os.getenv("TOOL_HEALTH_TOKEN", "").strip()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("encryptx-bot")
 START_TIME = time.monotonic()
+
+# key: (label, emoji, short description shown on the panel)
 TICKET_TYPES = {
-    "purchase": ("Purchase", "🛒", discord.Color.gold()),
-    "support": ("Technical Support", "🛠️", discord.Color.blurple()),
-    "general": ("General Inquiry", "💬", discord.Color.teal()),
+    "purchase": ("Purchase", "🛒", "Pricing, orders, payments and giveaways."),
+    "support": ("Technical Support", "🛠️", "Setup help and troubleshooting."),
+    "general": ("General Inquiry", "💬", "Any other question."),
 }
 
 
@@ -69,6 +73,63 @@ def duration_seconds(raw):
     if number or total < 30 or total > 30 * 86400:
         raise ValueError("Duration must be between 30 seconds and 30 days.")
     return total
+
+
+# ---------------------------------------------------------------------------
+# Panel styling (the look from the screenshot):
+#   ## Title
+#   description
+#   ───────────
+#   **Section name**
+#   -# small grey text
+#   ───────────
+#   -# footer
+#   [button] [button] [button]
+# ---------------------------------------------------------------------------
+def sub(text):
+    """Small grey text (Discord subtext). Each line needs its own '-#'."""
+    return "\n".join(f"-# {line}" if line.strip() else "" for line in str(text).split("\n"))
+
+
+def line_sep():
+    return discord.ui.Separator(visible=True, spacing=discord.SeparatorSpacing.small)
+
+
+def gap_sep():
+    return discord.ui.Separator(visible=False, spacing=discord.SeparatorSpacing.large)
+
+
+def build_container(title, description=None, sections=(), footer=None, row=None):
+    items = [discord.ui.TextDisplay(f"## {title}")]
+    if description:
+        items.append(discord.ui.TextDisplay(description))
+    if sections:
+        items.append(line_sep())
+        for i, (name, text) in enumerate(sections):
+            if i:
+                items.append(gap_sep())
+            items.append(discord.ui.TextDisplay(f"**{name}**\n{sub(text)}"))
+    if footer:
+        items.append(line_sep())
+        items.append(discord.ui.TextDisplay(sub(footer)))
+    elif row is not None:
+        items.append(gap_sep())
+    if row is not None:
+        items.append(row)
+    # No accent colour -> same dark grey card as the screenshot.
+    return discord.ui.Container(*items)
+
+
+class Panel(discord.ui.LayoutView):
+    """Generic static panel (no buttons unless a row is given)."""
+
+    def __init__(self, title, description=None, sections=(), footer=None, row=None, timeout=None):
+        super().__init__(timeout=timeout)
+        self.add_item(build_container(title, description, sections, footer, row))
+
+
+async def reply_panel(interaction, *args, ephemeral=True, **kwargs):
+    await interaction.response.send_message(view=Panel(*args, **kwargs), ephemeral=ephemeral)
 
 
 class Database:
@@ -231,6 +292,32 @@ async def send_ticket_log(guild, content, file=None):
         return False
 
 
+async def publish_status(channel, saved_id):
+    """Edit the status panel; if the old message is a legacy embed message
+    (can't be converted to the new layout), delete it and post a fresh one."""
+    view = await bot.make_status_view(channel.guild)
+    msg = None
+    if saved_id:
+        try:
+            msg = await channel.fetch_message(saved_id)
+        except discord.HTTPException:
+            msg = None
+    if msg:
+        try:
+            await msg.edit(view=view)
+            return msg
+        except discord.HTTPException:
+            try:
+                await msg.delete()
+            except discord.HTTPException:
+                pass
+            view = await bot.make_status_view(channel.guild)
+    msg = await channel.send(view=view)
+    await db.set("status_message_id", msg.id)
+    bot.status_message_id = msg.id
+    return msg
+
+
 class EncryptXBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
@@ -281,39 +368,33 @@ class EncryptXBot(commands.Bot):
             self.tool_detail = f"Health check failed: {type(exc).__name__}"
             return "Offline", self.tool_detail
 
-    async def make_status_embed(self, guild):
+    async def status_sections(self, guild):
         tool_status, details = await self.check_tool()
         uptime = max(0, int(time.monotonic() - START_TIME))
         days, rem = divmod(uptime, 86400)
         hours, rem = divmod(rem, 3600)
         minutes, seconds = divmod(rem, 60)
-        color = discord.Color.green() if tool_status == "Online" else (
-            discord.Color.orange() if tool_status in ("Updating", "Maintenance", "Not configured")
-            else discord.Color.red())
-        embed = discord.Embed(title=f"{BRAND_NAME} | System Status",
-            description="Live overview of the bot, community, and tool.",
-            color=color, timestamp=now())
-        embed.add_field(name="🤖 Discord bot",
-            value=f"**Status:** 🟢 Online\n**Latency:** {round(self.latency * 1000)} ms\n"
-                  f"**Uptime:** {days}d {hours}h {minutes}m {seconds}s", inline=True)
+        sections = [("🤖 Discord bot",
+                     f"**Status:** 🟢 Online\n**Latency:** {round(self.latency * 1000)} ms\n"
+                     f"**Uptime:** {days}d {hours}h {minutes}m {seconds}s")]
         if guild:
-            embed.add_field(name="🌐 Community",
-                value=f"**Server:** {safe_text(guild.name, 90)}\n"
-                      f"**Members:** {guild.member_count if guild.member_count is not None else 'Unavailable'}\n"
-                      f"**Boosts:** {guild.premium_subscription_count if guild.premium_subscription_count is not None else 'Unavailable'}\n"
-                      f"**Boost level:** {guild.premium_tier}", inline=True)
-        embed.add_field(name=f"🔐 {BRAND_NAME}",
-            value=f"**Status:** {safe_text(tool_status, 60)}\n"
-                  f"**Version:** {safe_text(await db.get('tool_version'), 80)}\n"
-                  f"**Last update:** {safe_text(await db.get('tool_last_update'), 80)}\n"
-                  f"**Last health check:** {safe_text(await db.get('tool_last_check', 'Never'), 80)}\n"
-                  f"**Last successful check:** {safe_text(await db.get('tool_last_success', 'Never'), 80)}",
-            inline=False)
-        embed.add_field(name="📝 Release notes", value=safe_text(await db.get("tool_release_notes"), 900),
-                        inline=False)
-        embed.add_field(name="🔎 Health details", value=safe_text(details, 900), inline=False)
-        embed.set_footer(text=f"Updated {time_text()} • Refreshes automatically")
-        return embed
+            sections.append(("🌐 Community",
+                f"**Server:** {safe_text(guild.name, 90)}\n"
+                f"**Members:** {guild.member_count if guild.member_count is not None else 'Unavailable'}\n"
+                f"**Boosts:** {guild.premium_subscription_count if guild.premium_subscription_count is not None else 'Unavailable'}\n"
+                f"**Boost level:** {guild.premium_tier}"))
+        sections.append((f"🔐 {BRAND_NAME}",
+            f"**Status:** {safe_text(tool_status, 60)}\n"
+            f"**Version:** {safe_text(await db.get('tool_version'), 80)}\n"
+            f"**Last update:** {safe_text(await db.get('tool_last_update'), 80)}\n"
+            f"**Last health check:** {safe_text(await db.get('tool_last_check', 'Never'), 80)}\n"
+            f"**Last successful check:** {safe_text(await db.get('tool_last_success', 'Never'), 80)}"))
+        sections.append(("📝 Release notes", safe_text(await db.get("tool_release_notes"), 700)))
+        sections.append(("🔎 Health details", safe_text(details, 400)))
+        return sections
+
+    async def make_status_view(self, guild, refresh=True):
+        return StatusPanelView(await self.status_sections(guild), refresh=refresh)
 
     @tasks.loop(seconds=60)
     async def status_loop(self):
@@ -326,19 +407,7 @@ class EncryptXBot(commands.Bot):
             if not isinstance(channel, discord.TextChannel):
                 return
             saved = int(await db.get("status_message_id", str(self.status_message_id or 0)) or 0)
-            message = None
-            if saved:
-                try:
-                    message = await channel.fetch_message(saved)
-                except discord.NotFound:
-                    pass
-            embed = await self.make_status_embed(channel.guild)
-            if message:
-                await message.edit(embed=embed, view=StatusPanelView())
-            else:
-                message = await channel.send(embed=embed, view=StatusPanelView())
-                self.status_message_id = message.id
-                await db.set("status_message_id", message.id)
+            await publish_status(channel, saved)
         except (discord.HTTPException, discord.Forbidden):
             log.exception("Could not update status panel")
 
@@ -388,31 +457,40 @@ class RulesModal(discord.ui.Modal, title="Create a Rules Post"):
         if not title or not body:
             await interaction.response.send_message("Both fields are required.", ephemeral=True)
             return
-        embed = discord.Embed(title=title, description=body, color=discord.Color.blurple(),
-                              timestamp=now())
-        embed.set_footer(text=f"{BRAND_NAME} • Rules and community guidelines")
         try:
-            await interaction.channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+            await interaction.channel.send(
+                view=Panel(title, body, footer=f"{BRAND_NAME} • Rules and community guidelines"),
+                allowed_mentions=discord.AllowedMentions.none())
             await interaction.response.send_message("Rules post published in this channel.", ephemeral=True)
         except discord.HTTPException:
             await interaction.response.send_message("I couldn't publish the rules post. Check my channel permissions.", ephemeral=True)
 
 
-class StatusPanelView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
+# ----------------------------------------------------------------- status ---
+class StatusRow(discord.ui.ActionRow):
     @discord.ui.button(label="Refresh status", style=discord.ButtonStyle.secondary,
                        emoji="🔄", custom_id="status:refresh")
     async def refresh_status(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         try:
-            await interaction.message.edit(embed=await bot.make_status_embed(interaction.guild), view=self)
+            await interaction.message.edit(view=await bot.make_status_view(interaction.guild))
             await interaction.followup.send("Status refreshed.", ephemeral=True)
         except discord.HTTPException:
             await interaction.followup.send("Couldn't refresh the status message.", ephemeral=True)
 
 
+class StatusPanelView(discord.ui.LayoutView):
+    def __init__(self, sections=(), refresh=True):
+        super().__init__(timeout=None)
+        self.add_item(build_container(
+            f"{BRAND_NAME} | System Status",
+            "Live overview of the bot, community, and tool.",
+            sections,
+            footer=f"Updated {time_text()} • Refreshes automatically",
+            row=StatusRow() if refresh else None))
+
+
+# ---------------------------------------------------------------- tickets ---
 class TicketIntakeModal(discord.ui.Modal):
     def __init__(self, ticket_type):
         self.ticket_type = ticket_type
@@ -453,16 +531,13 @@ class TicketIntakeModal(discord.ui.Modal):
                 "Ticket creation failed. Check the bot's permissions and category settings.", ephemeral=True)
 
 
-class TicketPanelView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="Purchase", style=discord.ButtonStyle.success, emoji="🛒",
+class TicketPanelRow(discord.ui.ActionRow):
+    @discord.ui.button(label="Purchase", style=discord.ButtonStyle.secondary, emoji="🛒",
                        custom_id="tickets:purchase")
     async def purchase(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(TicketIntakeModal("purchase"))
 
-    @discord.ui.button(label="Technical support", style=discord.ButtonStyle.primary, emoji="🛠️",
+    @discord.ui.button(label="Technical support", style=discord.ButtonStyle.secondary, emoji="🛠️",
                        custom_id="tickets:support")
     async def support(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(TicketIntakeModal("support"))
@@ -473,11 +548,19 @@ class TicketPanelView(discord.ui.View):
         await interaction.response.send_modal(TicketIntakeModal("general"))
 
 
-class TicketControlsView(discord.ui.View):
+class TicketPanelView(discord.ui.LayoutView):
     def __init__(self):
         super().__init__(timeout=None)
+        self.add_item(build_container(
+            f"{BRAND_NAME} Support",
+            "Need help? Pick a category below and a private ticket will be opened just for you.",
+            [(f"{emoji} {label}", desc) for label, emoji, desc in TICKET_TYPES.values()],
+            footer="Only you and the staff can see your ticket. Never share passwords, recovery codes, or payment-card details.",
+            row=TicketPanelRow()))
 
-    @discord.ui.button(label="Claim", style=discord.ButtonStyle.success, emoji="🧑‍💻",
+
+class TicketControlsRow(discord.ui.ActionRow):
+    @discord.ui.button(label="Claim", style=discord.ButtonStyle.secondary, emoji="🧑‍💻",
                        custom_id="tickets:claim")
     async def claim(self, interaction: discord.Interaction, button: discord.ui.Button):
         row = await db.one("SELECT claimed_by,closed FROM tickets WHERE channel_id=?", (interaction.channel_id,))
@@ -494,7 +577,7 @@ class TicketControlsView(discord.ui.View):
         await interaction.response.send_message(f"Claimed by {interaction.user.mention}.")
         await send_ticket_log(interaction.guild, f"🧑‍💻 {interaction.user.mention} claimed <#{interaction.channel_id}>.")
 
-    @discord.ui.button(label="Close ticket", style=discord.ButtonStyle.danger, emoji="🔒",
+    @discord.ui.button(label="Close ticket", style=discord.ButtonStyle.secondary, emoji="🔒",
                        custom_id="tickets:close")
     async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
         row = await db.one("SELECT user_id,closed FROM tickets WHERE channel_id=?", (interaction.channel_id,))
@@ -510,7 +593,7 @@ class TicketControlsView(discord.ui.View):
             "Ticket archived." + (" Transcript logged." if ok else " Configure TICKET_LOG_CHANNEL_ID for transcript delivery."),
             ephemeral=True)
 
-    @discord.ui.button(label="Reopen", style=discord.ButtonStyle.primary, emoji="🔓",
+    @discord.ui.button(label="Reopen", style=discord.ButtonStyle.secondary, emoji="🔓",
                        custom_id="tickets:reopen")
     async def reopen(self, interaction: discord.Interaction, button: discord.ui.Button):
         row = await db.one("SELECT user_id,closed FROM tickets WHERE channel_id=?", (interaction.channel_id,))
@@ -532,10 +615,16 @@ class TicketControlsView(discord.ui.View):
         await send_ticket_log(guild, f"🔓 {interaction.user.mention} reopened <#{interaction.channel_id}>.")
 
 
+class TicketControlsView(discord.ui.LayoutView):
+    def __init__(self, title="Ticket", description=None, sections=(), footer=None):
+        super().__init__(timeout=None)
+        self.add_item(build_container(title, description, sections, footer, row=TicketControlsRow()))
+
+
 async def create_ticket(interaction, ticket_type, subject, details, extra=""):
     guild, user = interaction.guild, interaction.user
     number = await db.next_ticket_number()
-    label, emoji, color = TICKET_TYPES[ticket_type]
+    label, emoji, _desc = TICKET_TYPES[ticket_type]
     channel = await guild.create_text_channel(
         name=f"{ticket_type}-{number:04d}", category=category_for(guild, ticket_type),
         overwrites=ticket_overwrites(guild, user),
@@ -545,18 +634,22 @@ async def create_ticket(interaction, ticket_type, subject, details, extra=""):
         await db.execute("INSERT INTO tickets(channel_id,guild_id,user_id,created_at,ticket_type,ticket_number) "
                          "VALUES(?,?,?,?,?,?)",
                          (channel.id, guild.id, user.id, time_text(), ticket_type, number))
-        embed = discord.Embed(title=f"{emoji} {label} Ticket #{number:04d}",
-            description=f"Welcome {user.mention}. Staff will help you as soon as possible.\n\n"
-                        f"**Subject**\n{safe_text(subject,300)}\n\n**Details**\n{safe_text(details,1200)}",
-            color=color, timestamp=now())
+        pings = user.mention + (f" <@&{SUPPORT_ROLE_ID}>" if SUPPORT_ROLE_ID else "")
+        sections = [
+            ("Subject", safe_text(subject, 300)),
+            ("Details", safe_text(details, 1200)),
+        ]
         if extra:
-            embed.add_field(name="Order reference" if ticket_type == "purchase" else "Tool version / error code",
-                            value=safe_text(extra,500), inline=False)
-        embed.add_field(name="Owner", value=f"{user.mention}\n`{user.id}`", inline=True)
-        embed.add_field(name="Status", value="🟡 Open • Waiting for staff", inline=True)
-        embed.set_footer(text="Never share passwords, recovery codes, or payment-card details.")
-        content = user.mention + (f" <@&{SUPPORT_ROLE_ID}>" if SUPPORT_ROLE_ID else "")
-        await channel.send(content=content, embed=embed, view=TicketControlsView(),
+            sections.append(("Order reference" if ticket_type == "purchase" else "Tool version / error code",
+                             safe_text(extra, 500)))
+        sections.append(("Owner", f"{user.mention} ({user.id})"))
+        sections.append(("Status", "🟡 Open • Waiting for staff"))
+        view = TicketControlsView(
+            f"{emoji} {label} Ticket #{number:04d}",
+            f"Welcome {pings}. Staff will help you as soon as possible.",
+            sections,
+            footer="Never share passwords, recovery codes, or payment-card details.")
+        await channel.send(view=view,
                            allowed_mentions=discord.AllowedMentions(users=True, roles=bool(SUPPORT_ROLE_ID)))
         await send_ticket_log(guild, f"🎫 Opened **{label} #{number:04d}**: {channel.mention} by {user.mention}.")
         return channel
@@ -605,13 +698,7 @@ async def archive_ticket(channel, guild, actor):
 async def ticket_panel(interaction: discord.Interaction):
     if not await require_admin(interaction):
         return
-    embed = discord.Embed(title=f"{BRAND_NAME} | Support Center",
-        description="Choose a private ticket type:\n\n🛒 **Purchase** — pricing and orders\n"
-                    "🛠️ **Technical support** — setup and troubleshooting\n"
-                    "💬 **General inquiry** — other questions",
-        color=discord.Color.blurple())
-    embed.set_footer(text="Never share passwords, recovery codes, or payment-card details.")
-    await interaction.channel.send(embed=embed, view=TicketPanelView())
+    await interaction.channel.send(view=TicketPanelView())
     await interaction.response.send_message("Ticket panel posted.", ephemeral=True)
 
 
@@ -674,11 +761,8 @@ async def ticket_stats(interaction: discord.Interaction):
     total = (await db.one("SELECT COUNT(*) FROM tickets WHERE guild_id=?", (interaction.guild_id,)))[0]
     opened = (await db.one("SELECT COUNT(*) FROM tickets WHERE guild_id=? AND closed=0", (interaction.guild_id,)))[0]
     closed = (await db.one("SELECT COUNT(*) FROM tickets WHERE guild_id=? AND closed=1", (interaction.guild_id,)))[0]
-    embed = discord.Embed(title="Ticket statistics", color=discord.Color.blurple())
-    embed.add_field(name="Total", value=str(total), inline=True)
-    embed.add_field(name="Open", value=str(opened), inline=True)
-    embed.add_field(name="Archived", value=str(closed), inline=True)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await reply_panel(interaction, "Ticket statistics",
+                      sections=[("Total", str(total)), ("Open", str(opened)), ("Archived", str(closed))])
 
 
 @bot.tree.command(name="rules", description="Create a rules post using a popup form.")
@@ -694,7 +778,8 @@ async def rules_command(interaction: discord.Interaction):
 @bot.tree.command(name="status", description="View bot, server, and tool status.")
 async def status_command(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
-    await interaction.followup.send(embed=await bot.make_status_embed(interaction.guild), ephemeral=True)
+    await interaction.followup.send(view=await bot.make_status_view(interaction.guild, refresh=False),
+                                    ephemeral=True)
 
 
 @bot.tree.command(name="status-panel", description="Create or update the persistent public status panel.")
@@ -705,22 +790,11 @@ async def status_panel(interaction: discord.Interaction):
     if not isinstance(interaction.channel, discord.TextChannel):
         await interaction.response.send_message("Run this in a text channel.", ephemeral=True)
         return
+    await interaction.response.defer(ephemeral=True)
     saved = int(await db.get("status_message_id", "0") or 0)
-    message = None
-    channel = bot.get_channel(STATUS_CHANNEL_ID) if STATUS_CHANNEL_ID else interaction.channel
-    if saved and channel:
-        try:
-            message = await channel.fetch_message(saved)
-        except discord.HTTPException:
-            pass
-    if message:
-        await message.edit(embed=await bot.make_status_embed(interaction.guild), view=StatusPanelView())
-    else:
-        message = await interaction.channel.send(embed=await bot.make_status_embed(interaction.guild),
-                                                 view=StatusPanelView())
-        await db.set("status_message_id", message.id)
-        bot.status_message_id = message.id
-    await interaction.response.send_message(f"Status panel ready: {message.jump_url}", ephemeral=True)
+    channel = (bot.get_channel(STATUS_CHANNEL_ID) if STATUS_CHANNEL_ID else None) or interaction.channel
+    message = await publish_status(channel, saved)
+    await interaction.followup.send(f"Status panel ready: {message.jump_url}", ephemeral=True)
 
 
 @bot.tree.command(name="tool-version", description="Set the displayed tool version.")
@@ -775,11 +849,14 @@ async def tool_status(interaction: discord.Interaction, status: app_commands.Cho
 async def tool_info(interaction: discord.Interaction):
     if not await require_admin(interaction):
         return
-    await interaction.response.send_message(
-        f"**Status:** {await db.get('tool_status')}\n**Version:** {await db.get('tool_version')}\n"
-        f"**Last update:** {await db.get('tool_last_update')}\n**Release notes:** {await db.get('tool_release_notes')}\n"
-        f"**Last check:** {await db.get('tool_last_check','Never')}\n**Last successful check:** {await db.get('tool_last_success','Never')}",
-        ephemeral=True)
+    await reply_panel(interaction, f"{BRAND_NAME} | Tool info", sections=[
+        ("Status", safe_text(await db.get("tool_status"), 100)),
+        ("Version", safe_text(await db.get("tool_version"), 100)),
+        ("Last update", safe_text(await db.get("tool_last_update"), 100)),
+        ("Release notes", safe_text(await db.get("tool_release_notes"), 600)),
+        ("Last check", safe_text(await db.get("tool_last_check", "Never"), 100)),
+        ("Last successful check", safe_text(await db.get("tool_last_success", "Never"), 100)),
+    ])
 
 
 @bot.tree.command(name="tool-check", description="Check the configured tool health URL.")
@@ -787,15 +864,17 @@ async def tool_info(interaction: discord.Interaction):
 async def tool_check(interaction: discord.Interaction):
     if not await require_admin(interaction):
         return
+    await interaction.response.defer(ephemeral=True)
     status, detail = await bot.check_tool()
-    await interaction.response.send_message(f"**Tool status:** {status}\n**Details:** {detail}", ephemeral=True)
+    await interaction.followup.send(
+        view=Panel("Tool health check", sections=[("Tool status", safe_text(status, 100)),
+                                                  ("Details", safe_text(detail, 400))]),
+        ephemeral=True)
 
 
-class GiveawayView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(label="Enter Giveaway", style=discord.ButtonStyle.success, emoji="🎉",
+# -------------------------------------------------------------- giveaways ---
+class GiveawayRow(discord.ui.ActionRow):
+    @discord.ui.button(label="Enter Giveaway", style=discord.ButtonStyle.secondary, emoji="🎉",
                        custom_id="giveaway:enter")
     async def enter(self, interaction: discord.Interaction, button: discord.ui.Button):
         row = await db.one("SELECT ended FROM giveaways WHERE message_id=?", (interaction.message.id,))
@@ -808,6 +887,18 @@ class GiveawayView(discord.ui.View):
             await interaction.response.send_message("You're entered. Good luck!", ephemeral=True)
         except Exception:
             await interaction.response.send_message("You're already entered.", ephemeral=True)
+
+
+class GiveawayView(discord.ui.LayoutView):
+    def __init__(self, prize="Giveaway", winners=1, end=None):
+        super().__init__(timeout=None)
+        ends = f"<t:{int(end.timestamp())}:R>" if end else "Soon"
+        self.add_item(build_container(
+            "🎉 Giveaway!",
+            "Click Enter Giveaway to participate.",
+            [("🎁 Prize", safe_text(prize, 200)), ("🏆 Winners", str(winners)), ("⏰ Ends", ends)],
+            footer="One entry per member. Good luck!",
+            row=GiveawayRow()))
 
 
 async def finish_giveaway(bot_instance, message_id, guild_id, channel_id, prize, winner_count):
@@ -831,10 +922,12 @@ async def finish_giveaway(bot_instance, message_id, guild_id, channel_id, prize,
         await channel.send(f"Giveaway ended for **{safe_text(prize,200)}**, but nobody entered.")
     try:
         msg = await channel.fetch_message(message_id)
-        embed = msg.embeds[0] if msg.embeds else discord.Embed()
-        embed.title = "🎉 Giveaway ended"
-        embed.color = discord.Color.dark_grey()
-        await msg.edit(embed=embed, view=None)
+        await msg.edit(view=Panel(
+            "🎉 Giveaway ended",
+            sections=[("🎁 Prize", safe_text(prize, 200)),
+                      ("🏆 Winner(s)", ", ".join(f"<@{uid}>" for uid in winners) if winners else "Nobody entered.")],
+            footer="This giveaway has ended."),
+            allowed_mentions=discord.AllowedMentions.none())
     except discord.HTTPException:
         pass
 
@@ -857,11 +950,7 @@ async def giveaway_start(interaction: discord.Interaction, prize: str, duration:
         await interaction.response.send_message(str(exc), ephemeral=True)
         return
     end = now() + timedelta(seconds=seconds)
-    embed = discord.Embed(title="🎉 Giveaway!",
-        description=f"**Prize:** {safe_text(prize,200)}\n**Winners:** {winners}\n"
-                    f"**Ends:** <t:{int(end.timestamp())}:R>\n\nClick Enter Giveaway to participate.",
-        color=discord.Color.gold())
-    message = await interaction.channel.send(embed=embed, view=GiveawayView())
+    message = await interaction.channel.send(view=GiveawayView(prize, winners, end))
     await db.execute("INSERT INTO giveaways(message_id,guild_id,channel_id,prize,winner_count,ends_at,ended) "
                      "VALUES(?,?,?,?,?,?,0)",
                      (message.id, interaction.guild.id, interaction.channel.id, prize, winners, end.isoformat()))
