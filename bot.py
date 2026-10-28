@@ -525,6 +525,8 @@ class StatusRow(discord.ui.ActionRow):
     @discord.ui.button(label="Refresh status", style=discord.ButtonStyle.secondary,
                        emoji="🔄", custom_id="status:refresh")
     async def refresh_status(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await require_admin(interaction):
+            return
         await interaction.response.defer(ephemeral=True)
         try:
             await interaction.message.edit(view=await bot.make_status_view(interaction.guild))
@@ -830,7 +832,10 @@ async def rules_command(interaction: discord.Interaction):
 
 
 @bot.tree.command(name="status", description="View bot, server, and tool status.")
+@app_commands.default_permissions(administrator=True)
 async def status_command(interaction: discord.Interaction):
+    if not await require_admin(interaction):
+        return
     await interaction.response.defer(ephemeral=True)
     await interaction.followup.send(view=await bot.make_status_view(interaction.guild, refresh=False),
                                     ephemeral=True)
