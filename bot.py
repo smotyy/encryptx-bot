@@ -29,7 +29,7 @@ SUPPORT_CATEGORY_ID = int(os.getenv("SUPPORT_CATEGORY_ID", "1564464246002024448"
 GENERAL_CATEGORY_ID = int(os.getenv("GENERAL_CATEGORY_ID", "1564881268066484284") or 0)
 TICKET_LOG_CHANNEL_ID = int(os.getenv("TICKET_LOG_CHANNEL_ID", "1564881666223112302") or 0)
 STATUS_CHANNEL_ID = int(os.getenv("STATUS_CHANNEL_ID", "0") or 0)
-STATUS_MESSAGE_ID = int(os.getenv("STATUS_MESSAGE_ID", "0") or 0)
+STATUS_MESSAGE_ID = int(os.getenv("STATUS_MESSAGE_ID", "1564810335871959071") or 0)
 TOOL_HEALTH_URL = os.getenv("TOOL_HEALTH_URL", "").strip()
 TOOL_HEALTH_TOKEN = os.getenv("TOOL_HEALTH_TOKEN", "").strip()
 RELEASE_CHANNEL_ID = int(os.getenv("RELEASE_CHANNEL_ID", "0") or 0)
@@ -401,6 +401,11 @@ class EncryptXBot(commands.Bot):
             self.tree.copy_global_to(guild=guild)
             synced = await self.tree.sync(guild=guild)
             log.info("Synced %s commands to guild %s", len(synced), GUILD_ID)
+            # Clear any old GLOBAL commands from before GUILD_ID was set, so they
+            # don't show up twice alongside the new guild-scoped ones.
+            self.tree.clear_commands(guild=None)
+            await self.tree.sync(guild=None)
+            log.info("Cleared stale global commands")
         else:
             synced = await self.tree.sync()
             log.info("Synced %s global commands", len(synced))
@@ -836,9 +841,8 @@ async def rules_command(interaction: discord.Interaction):
 async def status_command(interaction: discord.Interaction):
     if not await require_admin(interaction):
         return
-    await interaction.response.defer(ephemeral=True)
-    await interaction.followup.send(view=await bot.make_status_view(interaction.guild, refresh=False),
-                                    ephemeral=True)
+    await interaction.response.defer(ephemeral=False)
+    await interaction.followup.send(view=await bot.make_status_view(interaction.guild, refresh=False))
 
 
 @bot.tree.command(name="status-panel", description="Create or update the persistent public status panel.")
