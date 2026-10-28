@@ -36,6 +36,7 @@ TOOL_HEALTH_TOKEN = os.getenv("TOOL_HEALTH_TOKEN", "").strip()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("encryptx-bot")
 START_TIME = time.monotonic()
+START_EPOCH = int(time.time())
 
 # key: (label, emoji, short description shown on the panel)
 TICKET_TYPES = {
@@ -166,7 +167,8 @@ class Database:
                 "tool_status": "Not configured", "tool_version": "Not configured",
                 "tool_last_update": "Not configured", "tool_release_notes": "No release notes yet.",
                 "tool_last_check": "Never", "tool_last_success": "Never",
-                "status_message_id": str(STATUS_MESSAGE_ID or 0), "ticket_counter": "0",
+                "status_message_id": str(STATUS_MESSAGE_ID or 0), "status_channel_id": str(STATUS_CHANNEL_ID or 0),
+                "ticket_counter": "0",
             }
             for k, v in defaults.items():
                 await con.execute("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)", (k, v))
@@ -318,6 +320,24 @@ async def publish_status(channel, saved_id):
     return msg
 
 
+async def refresh_status_panel(channel=None):
+    """Update (or create) the live status panel. Channel comes from /status-panel
+    (saved in the database) or the STATUS_CHANNEL_ID env var."""
+    try:
+        if channel is None:
+            cid = int(await db.get("status_channel_id", "0") or 0) or STATUS_CHANNEL_ID
+            if not cid:
+                return None
+            channel = bot.get_channel(cid) or await bot.fetch_channel(cid)
+        if not isinstance(channel, discord.TextChannel):
+            return None
+        saved = int(await db.get("status_message_id", str(bot.status_message_id or 0)) or 0)
+        return await publish_status(channel, saved)
+    except (discord.HTTPException, discord.Forbidden):
+        log.exception("Could not update status panel")
+        return None
+
+
 class EncryptXBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
@@ -370,27 +390,28 @@ class EncryptXBot(commands.Bot):
 
     async def status_sections(self, guild):
         tool_status, details = await self.check_tool()
-        uptime = max(0, int(time.monotonic() - START_TIME))
-        days, rem = divmod(uptime, 86400)
-        hours, rem = divmod(rem, 3600)
-        minutes, seconds = divmod(rem, 60)
-        sections = [("🤖 Discord bot",
+        icon = {"Online": "🟢", "Offline": "🔴", "Updating": "🟠", "Maintenance": "🟠"}.get(tool_status, "⚪")
+        sections = [("🤖 Bot",
                      f"**Status:** 🟢 Online\n**Latency:** {round(self.latency * 1000)} ms\n"
-                     f"**Uptime:** {days}d {hours}h {minutes}m {seconds}s")]
+                     f"**Online since:** <t:{START_EPOCH}:R>")]
         if guild:
-            sections.append(("🌐 Community",
-                f"**Server:** {safe_text(guild.name, 90)}\n"
+            open_tickets = (await db.one("SELECT COUNT(*) FROM tickets WHERE guild_id=? AND closed=0",
+                                         (guild.id,)))[0]
+            sections.append(("🌐 Server",
+                f"**Name:** {safe_text(guild.name, 90)}\n"
                 f"**Members:** {guild.member_count if guild.member_count is not None else 'Unavailable'}\n"
-                f"**Boosts:** {guild.premium_subscription_count if guild.premium_subscription_count is not None else 'Unavailable'}\n"
-                f"**Boost level:** {guild.premium_tier}"))
+                f"**Channels:** {len(guild.text_channels)} text • {len(guild.voice_channels)} voice\n"
+                f"**Roles:** {len(guild.roles)}\n"
+                f"**Boosts:** {guild.premium_subscription_count or 0} (level {guild.premium_tier})\n"
+                f"**Open tickets:** {open_tickets}"))
         sections.append((f"🔐 {BRAND_NAME}",
-            f"**Status:** {safe_text(tool_status, 60)}\n"
+            f"**Status:** {icon} {safe_text(tool_status, 60)}\n"
             f"**Version:** {safe_text(await db.get('tool_version'), 80)}\n"
             f"**Last update:** {safe_text(await db.get('tool_last_update'), 80)}\n"
             f"**Last health check:** {safe_text(await db.get('tool_last_check', 'Never'), 80)}\n"
-            f"**Last successful check:** {safe_text(await db.get('tool_last_success', 'Never'), 80)}"))
+            f"**Last successful check:** {safe_text(await db.get('tool_last_success', 'Never'), 80)}\n"
+            f"**Details:** {safe_text(details, 200)}"))
         sections.append(("📝 Release notes", safe_text(await db.get("tool_release_notes"), 700)))
-        sections.append(("🔎 Health details", safe_text(details, 400)))
         return sections
 
     async def make_status_view(self, guild, refresh=True):
@@ -398,18 +419,7 @@ class EncryptXBot(commands.Bot):
 
     @tasks.loop(seconds=60)
     async def status_loop(self):
-        if not STATUS_CHANNEL_ID:
-            return
-        try:
-            channel = self.get_channel(STATUS_CHANNEL_ID)
-            if channel is None:
-                channel = await self.fetch_channel(STATUS_CHANNEL_ID)
-            if not isinstance(channel, discord.TextChannel):
-                return
-            saved = int(await db.get("status_message_id", str(self.status_message_id or 0)) or 0)
-            await publish_status(channel, saved)
-        except (discord.HTTPException, discord.Forbidden):
-            log.exception("Could not update status panel")
+        await refresh_status_panel()
 
     @status_loop.before_loop
     async def before_status_loop(self):
@@ -486,7 +496,7 @@ class StatusPanelView(discord.ui.LayoutView):
             f"{BRAND_NAME} | System Status",
             "Live overview of the bot, community, and tool.",
             sections,
-            footer=f"Updated {time_text()} • Refreshes automatically",
+            footer=f"Last updated <t:{int(now().timestamp())}:R> • Refreshes every minute",
             row=StatusRow() if refresh else None))
 
 
@@ -791,10 +801,12 @@ async def status_panel(interaction: discord.Interaction):
         await interaction.response.send_message("Run this in a text channel.", ephemeral=True)
         return
     await interaction.response.defer(ephemeral=True)
-    saved = int(await db.get("status_message_id", "0") or 0)
-    channel = (bot.get_channel(STATUS_CHANNEL_ID) if STATUS_CHANNEL_ID else None) or interaction.channel
+    channel = interaction.channel
+    old_cid = int(await db.get("status_channel_id", "0") or 0) or STATUS_CHANNEL_ID
+    saved = int(await db.get("status_message_id", "0") or 0) if old_cid == channel.id else 0
     message = await publish_status(channel, saved)
-    await interaction.followup.send(f"Status panel ready: {message.jump_url}", ephemeral=True)
+    await db.set("status_channel_id", channel.id)
+    await interaction.followup.send(f"Status panel is live in this channel and will update itself every minute: {message.jump_url}", ephemeral=True)
 
 
 @bot.tree.command(name="tool-version", description="Set the displayed tool version.")
@@ -807,6 +819,7 @@ async def tool_version(interaction: discord.Interaction, version: str):
         await interaction.response.send_message("Version must be 1–50 characters.", ephemeral=True)
         return
     await db.set("tool_version", version)
+    await refresh_status_panel()
     await interaction.response.send_message(f"Tool version set to **{version}**.", ephemeral=True)
 
 
@@ -825,6 +838,7 @@ async def tool_update(interaction: discord.Interaction, date: str, notes: str):
         return
     await db.set("tool_last_update", date)
     await db.set("tool_release_notes", notes)
+    await refresh_status_panel()
     await interaction.response.send_message(f"Update recorded for **{date}**.", ephemeral=True)
 
 
@@ -841,6 +855,7 @@ async def tool_status(interaction: discord.Interaction, status: app_commands.Cho
     if not await require_admin(interaction):
         return
     await db.set("tool_status", status.value)
+    await refresh_status_panel()
     await interaction.response.send_message(f"Tool status set to **{status.value}**.", ephemeral=True)
 
 
