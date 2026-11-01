@@ -8,12 +8,12 @@ import os
 from datetime import datetime
 
 # ================== CONFIG ==================
-DISCORD_TOKEN = "MTU2NDgwNjAzNjQ0NjI1NzI2Mw.G1ZezF.ua8lXkysqWsemsTTyutF1_ItmLYpX6v-c1o-XQ"
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN") or os.getenv("TOKEN")
 SUPABASE_URL = "https://ykhzykmcmozwpouewbdw.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlraHp5a21jbW96d3BvdWV3YmR3Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc5MzIzMTc1OCwiZXhwIjoyMTA4ODA3NzU4fQ.W2pcdg60zYes_jziY50AIyBIM1lNzdUYPHVkwG9RhRY"
 
 # Only these Discord user IDs can use admin commands
-ADMIN_IDS = [1564463025065427044]  # <-- REPLACE WITH YOUR DISCORD ID
+ADMIN_IDS = [777974080631734314]  # ← PUT YOUR DISCORD ID HERE
 
 # ============================================
 
