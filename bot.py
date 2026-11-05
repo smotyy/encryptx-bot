@@ -5,6 +5,7 @@ from supabase import create_client
 import random
 import string
 import os
+import asyncio
 
 # ================== CONFIG ==================
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN") or os.getenv("TOKEN") or os.getenv("discord.token")
