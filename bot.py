@@ -216,7 +216,7 @@ class TicketView(discord.ui.View):
         }
 
         channel_name = f"{ticket_type}-{interaction.user.name}".lower().replace(" ", "-")[:90]
-        channel = await interaction.guild.create_text_channel(
+        channel = await interaction.guild.create_text_channel(await interaction.response.defer(ephemeral=True)
             name=channel_name,
             category=category,
             overwrites=overwrites,
