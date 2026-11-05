@@ -17,7 +17,7 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
  
 ADMIN_IDS = [777974080631734314]
 CHANGELOG_CHANNEL_ID = 1567931252621709392
-DOWNLOAD_URL = "https://drive.google.com/file/d/13oVZ4gwGma4-DW09AZEL_n1HmOnzigtf/view?usp=sharing"
+DOWNLOAD_URL = "https://drive.google.com/file/d/1t88d-YdnGWiPos5Ii0uoSZ28zQwA7zQq/view?usp=sharing"
 VERSION = "1.0.0"
 # ============================================
  
