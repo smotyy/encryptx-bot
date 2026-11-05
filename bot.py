@@ -252,8 +252,9 @@ async def ticket_panel(interaction: discord.Interaction):
 async def close_ticket(interaction: discord.Interaction):
     if not interaction.channel.topic or not interaction.channel.topic.startswith("ticket-"):
         return await interaction.response.send_message("This is not a ticket channel.", ephemeral=True)
-    await interaction.response.send_message("Closing ticket in 3 seconds...")
-    await interaction.channel.delete(delay=3)
+    await interaction.response.send_message("Closing this ticket in 3 seconds...")
+    await asyncio.sleep(3)
+    await interaction.channel.delete(reason="Ticket closed")
 
 # ========== DOWNLOAD PANEL ==========
 
