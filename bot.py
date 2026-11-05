@@ -7,6 +7,10 @@ import string
 import os
 from datetime import datetime
 
+import os
+
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN") or os.getenv("TOKEN") or os.getenv("discord.token")
+
 # ================== CONFIG ==================
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN") or os.getenv("TOKEN")
 SUPABASE_URL = "https://ykhzykmcmozwpouewbdw.supabase.co"
