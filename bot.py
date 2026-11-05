@@ -165,8 +165,22 @@ async def accounts(interaction: discord.Interaction):
     lines = []
     for acc in accounts:
         premium = "⭐ Premium" if acc.get("is_premium") else "Free"
-        discord = acc.get("discord_username") or "Not linked"
-        lines.append(f"**{acc['username']}** — {premium} | Discord: {discord}")
+        @bot.tree.command(name="accounts", description="List all accounts and manage them")
+async def accounts(interaction: discord.Interaction):
+    if not is_admin(interaction):
+        return await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
+
+    result = supabase.table("profiles").select("*").order("created_at", desc=True).limit(25).execute()
+    if not result.data:
+        return await interaction.response.send_message("No accounts found.", ephemeral=True)
+
+    accounts_list = result.data
+
+    lines = []
+    for acc in accounts_list:
+        premium = "⭐ Premium" if acc.get("is_premium") else "Free"
+        discord_name = acc.get("discord_username") or "Not linked"
+        lines.append(f"**{acc['username']}** — {premium} | Discord: {discord_name}")
 
     embed = discord.Embed(
         title="👥 Accounts",
@@ -175,7 +189,7 @@ async def accounts(interaction: discord.Interaction):
     )
     embed.set_footer(text="Select an account below to delete it")
 
-    await interaction.response.send_message(embed=embed, view=AccountSelectView(accounts), ephemeral=True)
+    await interaction.response.send_message(embed=embed, view=AccountSelectView(accounts_list), ephemeral=True)
 
 # ========== STATUS ==========
 
