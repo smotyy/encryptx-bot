@@ -5,19 +5,14 @@ from supabase import create_client
 import random
 import string
 import os
-from datetime import datetime
-
-import os
-
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN") or os.getenv("TOKEN") or os.getenv("discord.token")
 
 # ================== CONFIG ==================
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN") or os.getenv("TOKEN")
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN") or os.getenv("TOKEN") or os.getenv("discord.token")
 SUPABASE_URL = "https://ykhzykmcmozwpouewbdw.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlraHp5a21jbW96d3BvdWV3YmR3Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc5MzIzMTc1OCwiZXhwIjoyMTA4ODA3NzU4fQ.W2pcdg60zYes_jziY50AIyBIM1lNzdUYPHVkwG9RhRY"
 
-# Only these Discord user IDs can use admin commands
-ADMIN_IDS = [777974080631734314]  # ← PUT YOUR DISCORD ID HERE
+# Put your Discord User ID here
+ADMIN_IDS = [123456789012345678]  # ← REPLACE THIS WITH YOUR DISCORD ID
 
 # ============================================
 
@@ -140,7 +135,6 @@ async def user_info(interaction: discord.Interaction, username: str):
     embed = discord.Embed(title=f"User: {user['username']}", color=0x9b59b6)
     embed.add_field(name="Premium", value="Yes ✅" if user["is_premium"] else "No ❌", inline=True)
     embed.add_field(name="Discord", value=user.get("discord_username") or "Not linked", inline=True)
-    embed.add_field(name="Created", value=user.get("created_at", "Unknown")[:10], inline=True)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 # ========== STATUS ==========
@@ -160,7 +154,7 @@ async def status(interaction: discord.Interaction):
     embed.set_footer(text="3ncrÿp†× Management Bot")
     await interaction.response.send_message(embed=embed)
 
-# ========== TICKET SYSTEM (Simple) ==========
+# ========== TICKET SYSTEM ==========
 
 @bot.tree.command(name="ticket", description="Create a support ticket")
 async def ticket(interaction: discord.Interaction):
@@ -192,7 +186,7 @@ async def close_ticket(interaction: discord.Interaction):
     else:
         await interaction.response.send_message("This is not a ticket channel.", ephemeral=True)
 
-# ========== GIVEAWAY (Simple) ==========
+# ========== GIVEAWAY ==========
 
 @bot.tree.command(name="giveaway", description="Start a simple giveaway")
 @app_commands.describe(prize="What is the prize?", winners="Number of winners")
@@ -207,4 +201,7 @@ async def giveaway(interaction: discord.Interaction, prize: str, winners: int = 
     await msg.add_reaction("🎉")
 
 # ================== START ==================
-bot.run(DISCORD_TOKEN)
+if not DISCORD_TOKEN:
+    print("ERROR: No Discord token found in environment variables!")
+else:
+    bot.run(DISCORD_TOKEN)
