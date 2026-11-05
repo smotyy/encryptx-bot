@@ -12,7 +12,7 @@ SUPABASE_URL = "https://ykhzykmcmozwpouewbdw.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlraHp5a21jbW96d3BvdWV3YmR3Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc5MzIzMTc1OCwiZXhwIjoyMTA4ODA3NzU4fQ.W2pcdg60zYes_jziY50AIyBIM1lNzdUYPHVkwG9RhRY"
 
 # Put your Discord User ID here
-ADMIN_IDS = [123456789012345678]  # ← REPLACE THIS WITH YOUR DISCORD ID
+ADMIN_IDS = [777974080631734314]  # ← REPLACE THIS WITH YOUR DISCORD ID
 
 # ============================================
 
@@ -154,37 +154,99 @@ async def status(interaction: discord.Interaction):
     embed.set_footer(text="3ncrÿp†× Management Bot")
     await interaction.response.send_message(embed=embed)
 
-# ========== TICKET SYSTEM ==========
+# ========== TICKET SYSTEM (Panel) ==========
 
-@bot.tree.command(name="ticket", description="Create a support ticket")
-async def ticket(interaction: discord.Interaction):
-    category = discord.utils.get(interaction.guild.categories, name="Tickets")
-    if not category:
-        category = await interaction.guild.create_category("Tickets")
+class TicketView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
 
-    overwrites = {
-        interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
-        interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True),
-        interaction.guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True)
-    }
+    @discord.ui.button(label="🛒 Purchase", style=discord.ButtonStyle.green, custom_id="ticket_purchase")
+    async def purchase_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.create_ticket(interaction, "purchase")
 
-    channel = await interaction.guild.create_text_channel(
-        f"ticket-{interaction.user.name}",
-        category=category,
-        overwrites=overwrites
+    @discord.ui.button(label="🛠️ Support", style=discord.ButtonStyle.blurple, custom_id="ticket_support")
+    async def support_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.create_ticket(interaction, "support")
+
+    @discord.ui.button(label="💬 General", style=discord.ButtonStyle.gray, custom_id="ticket_general")
+    async def general_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.create_ticket(interaction, "general")
+
+    async def create_ticket(self, interaction: discord.Interaction, ticket_type: str):
+        # Check if user already has an open ticket
+        for channel in interaction.guild.channels:
+            if isinstance(channel, discord.TextChannel) and channel.topic == f"ticket-{interaction.user.id}":
+                return await interaction.response.send_message(
+                    f"You already have an open ticket: {channel.mention}", ephemeral=True
+                )
+
+        category = discord.utils.get(interaction.guild.categories, name="Tickets")
+        if not category:
+            category = await interaction.guild.create_category("Tickets")
+
+        overwrites = {
+            interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True),
+            interaction.guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True)
+        }
+
+        # Add admin roles if you want (optional)
+        # for role_id in ADMIN_ROLE_IDS:
+        #     role = interaction.guild.get_role(role_id)
+        #     if role:
+        #         overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+
+        channel_name = f"{ticket_type}-{interaction.user.name}".lower().replace(" ", "-")[:90]
+        channel = await interaction.guild.create_text_channel(
+            name=channel_name,
+            category=category,
+            overwrites=overwrites,
+            topic=f"ticket-{interaction.user.id}"
+        )
+
+        colors = {
+            "purchase": 0x2ecc71,
+            "support": 0x3498db,
+            "general": 0x95a5a6
+        }
+
+        embed = discord.Embed(
+            title=f"{ticket_type.capitalize()} Ticket",
+            description=f"Hello {interaction.user.mention}!\n\nPlease describe your issue or request.\nA staff member will be with you shortly.",
+            color=colors.get(ticket_type, 0x3498db)
+        )
+        embed.set_footer(text="Use /close to close this ticket")
+
+        await channel.send(content=f"{interaction.user.mention}", embed=embed)
+        await interaction.response.send_message(f"✅ Your {ticket_type} ticket has been created: {channel.mention}", ephemeral=True)
+
+
+@bot.tree.command(name="ticket-panel", description="Send the ticket creation panel")
+async def ticket_panel(interaction: discord.Interaction):
+    if not is_admin(interaction):
+        return await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
+
+    embed = discord.Embed(
+        title="🎫 Support Tickets",
+        description="Please select the type of ticket you want to create:\n\n"
+                    "🛒 **Purchase** → Questions about buying / licenses\n"
+                    "🛠️ **Support** → Technical problems / help\n"
+                    "💬 **General** → Other questions",
+        color=0x5865F2
     )
+    embed.set_footer(text="3ncrÿp†× Support")
 
-    embed = discord.Embed(title="Support Ticket", description=f"Hello {interaction.user.mention}!\nPlease describe your issue.\nStaff will be with you soon.", color=0x3498db)
-    await channel.send(embed=embed)
-    await interaction.response.send_message(f"✅ Ticket created: {channel.mention}", ephemeral=True)
+    await interaction.channel.send(embed=embed, view=TicketView())
+    await interaction.response.send_message("✅ Ticket panel sent!", ephemeral=True)
+
 
 @bot.tree.command(name="close", description="Close the current ticket")
 async def close_ticket(interaction: discord.Interaction):
-    if "ticket-" in interaction.channel.name:
-        await interaction.response.send_message("Closing ticket in 3 seconds...")
-        await interaction.channel.delete(delay=3)
-    else:
-        await interaction.response.send_message("This is not a ticket channel.", ephemeral=True)
+    if not interaction.channel.topic or not interaction.channel.topic.startswith("ticket-"):
+        return await interaction.response.send_message("This is not a ticket channel.", ephemeral=True)
+
+    await interaction.response.send_message("Closing ticket in 3 seconds...")
+    await interaction.channel.delete(delay=3)
 
 # ========== GIVEAWAY ==========
 
