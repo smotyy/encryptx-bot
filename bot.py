@@ -7,9 +7,6 @@ import string
 import os
 from datetime import datetime
 
-print("TOKEN STARTS WITH:", str(DISCORD_TOKEN)[:15] if DISCORD_TOKEN else "NONE")
-print("TOKEN LENGTH:", len(DISCORD_TOKEN) if DISCORD_TOKEN else 0)
-
 # ================== CONFIG ==================
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN") or os.getenv("TOKEN")
 SUPABASE_URL = "https://ykhzykmcmozwpouewbdw.supabase.co"
