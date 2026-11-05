@@ -91,10 +91,9 @@ async def list_licenses(interaction: discord.Interaction):
 # ========== ACCOUNT MANAGEMENT ==========
 
 class ConfirmDeleteView(discord.ui.View):
-    def __init__(self, username: str, user_data: dict):
+    def __init__(self, username: str):
         super().__init__(timeout=60)
         self.username = username
-        self.user_data = user_data
 
     @discord.ui.button(label="✅ Confirm Delete", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -102,12 +101,7 @@ class ConfirmDeleteView(discord.ui.View):
             return await interaction.response.send_message("❌ No permission.", ephemeral=True)
 
         supabase.table("profiles").delete().eq("username", self.username).execute()
-
-        embed = discord.Embed(
-            title="🗑️ Account Deleted",
-            description=f"The account **{self.username}** has been permanently deleted.",
-            color=0xe74c3c
-        )
+        embed = discord.Embed(title="🗑️ Account Deleted", description=f"The account **{self.username}** has been permanently deleted.", color=0xe74c3c)
         await interaction.response.edit_message(embed=embed, view=None)
 
     @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.secondary)
@@ -118,14 +112,14 @@ class ConfirmDeleteView(discord.ui.View):
 class AccountSelect(discord.ui.Select):
     def __init__(self, accounts: list):
         options = []
-        for acc in accounts[:25]:  # Discord limit is 25 options
+        for acc in accounts[:25]:
             premium = "⭐" if acc.get("is_premium") else ""
-            discord_linked = "🔗" if acc.get("discord_username") else ""
-            label = f"{acc['username']} {premium}{discord_linked}"
+            linked = "🔗" if acc.get("discord_username") else ""
+            label = f"{acc['username']} {premium}{linked}"
             description = f"Premium: {'Yes' if acc.get('is_premium') else 'No'} | Discord: {acc.get('discord_username') or 'Not linked'}"
             options.append(discord.SelectOption(label=label[:100], value=acc["username"], description=description[:100]))
 
-        super().__init__(placeholder="Select an account to delete...", options=options, min_values=1, max_values=1)
+        super().__init__(placeholder="Select an account to delete...", options=options)
 
     async def callback(self, interaction: discord.Interaction):
         username = self.values[0]
@@ -134,14 +128,13 @@ class AccountSelect(discord.ui.Select):
             return await interaction.response.send_message("Account not found.", ephemeral=True)
 
         user = result.data[0]
-
         embed = discord.Embed(title="⚠️ Confirm Account Deletion", color=0xe67e22)
         embed.add_field(name="Username", value=user["username"], inline=True)
         embed.add_field(name="Premium", value="Yes ✅" if user.get("is_premium") else "No ❌", inline=True)
         embed.add_field(name="Discord", value=user.get("discord_username") or "Not linked", inline=True)
         embed.set_footer(text="This action is permanent!")
 
-        await interaction.response.send_message(embed=embed, view=ConfirmDeleteView(username, user), ephemeral=True)
+        await interaction.response.send_message(embed=embed, view=ConfirmDeleteView(username), ephemeral=True)
 
 
 class AccountSelectView(discord.ui.View):
@@ -159,21 +152,6 @@ async def accounts(interaction: discord.Interaction):
     if not result.data:
         return await interaction.response.send_message("No accounts found.", ephemeral=True)
 
-    accounts = result.data
-
-    # Create list embed
-    lines = []
-    for acc in accounts:
-        premium = "⭐ Premium" if acc.get("is_premium") else "Free"
-        @bot.tree.command(name="accounts", description="List all accounts and manage them")
-async def accounts(interaction: discord.Interaction):
-    if not is_admin(interaction):
-        return await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
-
-    result = supabase.table("profiles").select("*").order("created_at", desc=True).limit(25).execute()
-    if not result.data:
-        return await interaction.response.send_message("No accounts found.", ephemeral=True)
-
     accounts_list = result.data
 
     lines = []
@@ -182,11 +160,7 @@ async def accounts(interaction: discord.Interaction):
         discord_name = acc.get("discord_username") or "Not linked"
         lines.append(f"**{acc['username']}** — {premium} | Discord: {discord_name}")
 
-    embed = discord.Embed(
-        title="👥 Accounts",
-        description="\n".join(lines),
-        color=0x9b59b6
-    )
+    embed = discord.Embed(title="👥 Accounts", description="\n".join(lines), color=0x9b59b6)
     embed.set_footer(text="Select an account below to delete it")
 
     await interaction.response.send_message(embed=embed, view=AccountSelectView(accounts_list), ephemeral=True)
