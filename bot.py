@@ -199,9 +199,32 @@ async def accounts(interaction: discord.Interaction):
  
     await interaction.followup.send(embed=embed, view=AccountSelectView(accounts_list), ephemeral=True)
  
+import asyncio
+
 # ========== LIVE STATUS ==========
 
-STATUS_MESSAGE = None  # Will store the message
+STATUS_MESSAGE = None
+
+APP_STATUS = {
+    "status": "online",
+    "message": "All systems operational"
+}
+
+STATUS_EMOJI = {
+    "online": "🟢",
+    "offline": "🔴",
+    "updating": "🔵",
+    "maintenance": "🟡",
+    "issues": "🟠"
+}
+
+STATUS_TEXT = {
+    "online": "Online",
+    "offline": "Offline",
+    "updating": "Updating",
+    "maintenance": "Maintenance",
+    "issues": "Having Issues"
+}
 
 async def update_status_message():
     global STATUS_MESSAGE
@@ -214,16 +237,27 @@ async def update_status_message():
         licenses = supabase.table("licenses").select("id", count="exact").execute()
         used = supabase.table("licenses").select("id", count="exact").eq("is_used", True).execute()
 
+        emoji = STATUS_EMOJI.get(APP_STATUS["status"], "⚪")
+        text = STATUS_TEXT.get(APP_STATUS["status"], "Unknown")
+
+        color = 0x00ff88 if APP_STATUS["status"] == "online" else 0xff5555
+
         embed = discord.Embed(
-            title="📊 3ncrÿp†× Live Status",
-            color=0x00ff88,
+            title="3ncrÿp†× Status",
+            color=color,
             timestamp=discord.utils.utcnow()
+        )
+
+        embed.add_field(
+            name="App Status",
+            value=f"{emoji} **{text}**\n{APP_STATUS['message']}",
+            inline=False
         )
         embed.add_field(name="Total Users", value=f"**{users.count or 0}**", inline=True)
         embed.add_field(name="Premium Users", value=f"**{premiums.count or 0}**", inline=True)
         embed.add_field(name="Total Licenses", value=f"**{licenses.count or 0}**", inline=True)
         embed.add_field(name="Used Licenses", value=f"**{used.count or 0}**", inline=True)
-        embed.set_footer(text="Auto-updates every 5 minutes")
+        embed.set_footer(text="Auto-updates every 20 seconds")
 
         await STATUS_MESSAGE.edit(embed=embed)
     except Exception as e:
@@ -237,45 +271,60 @@ async def status_panel(interaction: discord.Interaction):
 
     global STATUS_MESSAGE
 
-    users = supabase.table("profiles").select("id", count="exact").execute()
-    premiums = supabase.table("profiles").select("id", count="exact").eq("is_premium", True).execute()
-    licenses = supabase.table("licenses").select("id", count="exact").execute()
-    used = supabase.table("licenses").select("id", count="exact").eq("is_used", True).execute()
+    emoji = STATUS_EMOJI.get(APP_STATUS["status"], "⚪")
+    text = STATUS_TEXT.get(APP_STATUS["status"], "Unknown")
 
     embed = discord.Embed(
-        title="📊 3ncrÿp†× Live Status",
+        title="3ncrÿp†× Status",
         color=0x00ff88,
         timestamp=discord.utils.utcnow()
     )
-    embed.add_field(name="Total Users", value=f"**{users.count or 0}**", inline=True)
-    embed.add_field(name="Premium Users", value=f"**{premiums.count or 0}**", inline=True)
-    embed.add_field(name="Total Licenses", value=f"**{licenses.count or 0}**", inline=True)
-    embed.add_field(name="Used Licenses", value=f"**{used.count or 0}**", inline=True)
-    embed.set_footer(text="Auto-updates every 5 minutes")
+    embed.add_field(name="App Status", value=f"{emoji} **{text}**\n{APP_STATUS['message']}", inline=False)
+    embed.add_field(name="Total Users", value="**0**", inline=True)
+    embed.add_field(name="Premium Users", value="**0**", inline=True)
+    embed.add_field(name="Total Licenses", value="**0**", inline=True)
+    embed.add_field(name="Used Licenses", value="**0**", inline=True)
+    embed.set_footer(text="Auto-updates every 20 seconds")
 
     await interaction.response.send_message("✅ Live status created!", ephemeral=True)
     STATUS_MESSAGE = await interaction.channel.send(embed=embed)
 
 
-# Background task that updates every 5 minutes
-@bot.event
-async def on_ready():
-    print(f"Logged in as {bot.user}")
-    try:
-        synced = await bot.tree.sync()
-        print(f"Synced {len(synced)} slash commands")
-    except Exception as e:
-        print(e)
+@bot.tree.command(name="set-status", description="Set the app status")
+@app_commands.describe(status="The status of the app", message="Optional custom message")
+@app_commands.choices(status=[
+    app_commands.Choice(name="🟢 Online", value="online"),
+    app_commands.Choice(name="🔴 Offline", value="offline"),
+    app_commands.Choice(name="🔵 Updating", value="updating"),
+    app_commands.Choice(name="🟡 Maintenance", value="maintenance"),
+    app_commands.Choice(name="🟠 Having Issues", value="issues"),
+])
+async def set_status(interaction: discord.Interaction, status: app_commands.Choice[str], message: str = None):
+    if not is_admin(interaction):
+        return await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
 
-    # Start the auto-update loop
-    bot.loop.create_task(status_updater())
+    APP_STATUS["status"] = status.value
+    APP_STATUS["message"] = message or {
+        "online": "All systems operational",
+        "offline": "App is currently offline",
+        "updating": "App is being updated",
+        "maintenance": "Under maintenance",
+        "issues": "We are experiencing issues"
+    }[status.value]
+
+    # Force update immediately
+    await update_status_message()
+
+    emoji = STATUS_EMOJI[status.value]
+    text = STATUS_TEXT[status.value]
+    await interaction.response.send_message(f"Status set to {emoji} **{text}**", ephemeral=True)
 
 
 async def status_updater():
     await bot.wait_until_ready()
     while not bot.is_closed():
         await update_status_message()
-        await asyncio.sleep(300)  # 5 minutes
+        await asyncio.sleep(20)  # every 20 seconds
  
 # ========== IMPROVED TICKET SYSTEM ==========
 
