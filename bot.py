@@ -199,64 +199,145 @@ async def accounts(interaction: discord.Interaction):
  
     await interaction.followup.send(embed=embed, view=AccountSelectView(accounts_list), ephemeral=True)
  
-# ========== STATUS ==========
- 
-@bot.tree.command(name="status", description="Show 3ncrÿp†× stats")
-async def status(interaction: discord.Interaction):
-    await interaction.response.defer()
- 
-    def fetch_counts():
+# ========== LIVE STATUS ==========
+
+STATUS_MESSAGE = None  # Will store the message
+
+async def update_status_message():
+    global STATUS_MESSAGE
+    if STATUS_MESSAGE is None:
+        return
+
+    try:
         users = supabase.table("profiles").select("id", count="exact").execute()
         premiums = supabase.table("profiles").select("id", count="exact").eq("is_premium", True).execute()
         licenses = supabase.table("licenses").select("id", count="exact").execute()
         used = supabase.table("licenses").select("id", count="exact").eq("is_used", True).execute()
-        return users.count or 0, premiums.count or 0, licenses.count or 0, used.count or 0
+
+        embed = discord.Embed(
+            title="📊 3ncrÿp†× Live Status",
+            color=0x00ff88,
+            timestamp=discord.utils.utcnow()
+        )
+        embed.add_field(name="Total Users", value=f"**{users.count or 0}**", inline=True)
+        embed.add_field(name="Premium Users", value=f"**{premiums.count or 0}**", inline=True)
+        embed.add_field(name="Total Licenses", value=f"**{licenses.count or 0}**", inline=True)
+        embed.add_field(name="Used Licenses", value=f"**{used.count or 0}**", inline=True)
+        embed.set_footer(text="Auto-updates every 5 minutes")
+
+        await STATUS_MESSAGE.edit(embed=embed)
+    except Exception as e:
+        print("Failed to update status:", e)
+
+
+@bot.tree.command(name="status-panel", description="Create a live auto-updating status message")
+async def status_panel(interaction: discord.Interaction):
+    if not is_admin(interaction):
+        return await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
+
+    global STATUS_MESSAGE
+
+    users = supabase.table("profiles").select("id", count="exact").execute()
+    premiums = supabase.table("profiles").select("id", count="exact").eq("is_premium", True).execute()
+    licenses = supabase.table("licenses").select("id", count="exact").execute()
+    used = supabase.table("licenses").select("id", count="exact").eq("is_used", True).execute()
+
+    embed = discord.Embed(
+        title="📊 3ncrÿp†× Live Status",
+        color=0x00ff88,
+        timestamp=discord.utils.utcnow()
+    )
+    embed.add_field(name="Total Users", value=f"**{users.count or 0}**", inline=True)
+    embed.add_field(name="Premium Users", value=f"**{premiums.count or 0}**", inline=True)
+    embed.add_field(name="Total Licenses", value=f"**{licenses.count or 0}**", inline=True)
+    embed.add_field(name="Used Licenses", value=f"**{used.count or 0}**", inline=True)
+    embed.set_footer(text="Auto-updates every 5 minutes")
+
+    await interaction.response.send_message("✅ Live status created!", ephemeral=True)
+    STATUS_MESSAGE = await interaction.channel.send(embed=embed)
+
+
+# Background task that updates every 5 minutes
+@bot.event
+async def on_ready():
+    print(f"Logged in as {bot.user}")
+    try:
+        synced = await bot.tree.sync()
+        print(f"Synced {len(synced)} slash commands")
+    except Exception as e:
+        print(e)
+
+    # Start the auto-update loop
+    bot.loop.create_task(status_updater())
+
+
+async def status_updater():
+    await bot.wait_until_ready()
+    while not bot.is_closed():
+        await update_status_message()
+        await asyncio.sleep(300)  # 5 minutes
  
-    users, premiums, licenses, used = await asyncio.to_thread(fetch_counts)
- 
-    embed = discord.Embed(title="3ncrÿp†× Status", color=0x00ff88)
-    embed.add_field(name="Total Users", value=users, inline=True)
-    embed.add_field(name="Premium Users", value=premiums, inline=True)
-    embed.add_field(name="Total Licenses", value=licenses, inline=True)
-    embed.add_field(name="Used Licenses", value=used, inline=True)
-    await interaction.followup.send(embed=embed)
- 
-# ========== TICKET SYSTEM ==========
- 
+# ========== IMPROVED TICKET SYSTEM ==========
+
+class TicketControlView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="✅ Claim", style=discord.ButtonStyle.green, custom_id="ticket_claim")
+    async def claim(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin(interaction):
+            return await interaction.response.send_message("❌ Only staff can claim tickets.", ephemeral=True)
+
+        await interaction.channel.send(f"✅ Ticket claimed by {interaction.user.mention}")
+        await interaction.response.send_message("You claimed this ticket.", ephemeral=True)
+
+    @discord.ui.button(label="🔒 Close", style=discord.ButtonStyle.red, custom_id="ticket_close")
+    async def close(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("Closing ticket in 5 seconds...")
+        await interaction.channel.send(f"Ticket closed by {interaction.user.mention}")
+        await interaction.channel.delete(delay=5)
+
+
 class TicketView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
- 
-    @discord.ui.button(label="🛒 Purchase", style=discord.ButtonStyle.green, custom_id="ticket_purchase")
-    async def purchase_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+
+    @discord.ui.button(label="🛒 Purchase", style=discord.ButtonStyle.green, custom_id="ticket_purchase", emoji="🛒")
+    async def purchase(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.create_ticket(interaction, "purchase")
- 
-    @discord.ui.button(label="🛠️ Support", style=discord.ButtonStyle.blurple, custom_id="ticket_support")
-    async def support_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+
+    @discord.ui.button(label="🛠️ Support", style=discord.ButtonStyle.blurple, custom_id="ticket_support", emoji="🛠️")
+    async def support(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.create_ticket(interaction, "support")
- 
-    @discord.ui.button(label="💬 General", style=discord.ButtonStyle.gray, custom_id="ticket_general")
-    async def general_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+
+    @discord.ui.button(label="💬 General", style=discord.ButtonStyle.gray, custom_id="ticket_general", emoji="💬")
+    async def general(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self.create_ticket(interaction, "general")
- 
+
     async def create_ticket(self, interaction: discord.Interaction, ticket_type: str):
-        # Acknowledge right away so Discord doesn't time out
-        await interaction.response.defer(ephemeral=True)
- 
-        for channel in interaction.guild.channels:
-            if isinstance(channel, discord.TextChannel) and channel.topic == f"ticket-{interaction.user.id}":
-                return await interaction.followup.send(f"You already have an open ticket: {channel.mention}", ephemeral=True)
- 
+        # Check if user already has a ticket
+        for channel in interaction.guild.text_channels:
+            if channel.topic == f"ticket-{interaction.user.id}":
+                return await interaction.response.send_message(
+                    f"You already have an open ticket: {channel.mention}", ephemeral=True
+                )
+
         category = discord.utils.get(interaction.guild.categories, name="Tickets")
-        if not category:
+        if category is None:
             category = await interaction.guild.create_category("Tickets")
- 
+
         overwrites = {
             interaction.guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True),
+            interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, embed_links=True),
             interaction.guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True)
         }
- 
+
+        # Give admins access
+        for admin_id in ADMIN_IDS:
+            member = interaction.guild.get_member(admin_id)
+            if member:
+                overwrites[member] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+
         channel_name = f"{ticket_type}-{interaction.user.name}".lower().replace(" ", "-")[:90]
         channel = await interaction.guild.create_text_channel(
             name=channel_name,
@@ -264,40 +345,66 @@ class TicketView(discord.ui.View):
             overwrites=overwrites,
             topic=f"ticket-{interaction.user.id}"
         )
- 
-        colors = {"purchase": 0x2ecc71, "support": 0x3498db, "general": 0x95a5a6}
+
+        colors = {
+            "purchase": 0x2ecc71,
+            "support": 0x3498db,
+            "general": 0x95a5a6
+        }
+
         embed = discord.Embed(
             title=f"{ticket_type.capitalize()} Ticket",
-            description=f"Hello {interaction.user.mention}!\n\nPlease describe your issue.\nStaff will help you soon.",
+            description=(
+                f"Hello {interaction.user.mention}!\n\n"
+                f"**Type:** {ticket_type.capitalize()}\n"
+                "Please describe your issue or request in detail.\n"
+                "A staff member will be with you shortly."
+            ),
             color=colors.get(ticket_type, 0x3498db)
         )
-        embed.set_footer(text="Use /close to close this ticket")
- 
-        await channel.send(content=interaction.user.mention, embed=embed)
-        await interaction.followup.send(f"✅ Your {ticket_type} ticket has been created: {channel.mention}", ephemeral=True)
- 
- 
+        embed.set_footer(text="Staff can use the buttons below")
+
+        await channel.send(
+            content=f"{interaction.user.mention}",
+            embed=embed,
+            view=TicketControlView()
+        )
+
+        await interaction.response.send_message(
+            f"✅ Your **{ticket_type}** ticket has been created: {channel.mention}",
+            ephemeral=True
+        )
+
+
 @bot.tree.command(name="ticket-panel", description="Send the ticket creation panel")
 async def ticket_panel(interaction: discord.Interaction):
     if not is_admin(interaction):
         return await interaction.response.send_message("❌ You don't have permission.", ephemeral=True)
- 
+
     embed = discord.Embed(
-        title="🎫 Support Tickets",
-        description="Select the type of ticket:\n\n🛒 **Purchase** → Buying / licenses\n🛠️ **Support** → Technical help\n💬 **General** → Other questions",
+        title="🎫 3ncrÿp†× Support",
+        description=(
+            "Need help? Create a ticket by clicking one of the buttons below.\n\n"
+            "🛒 **Purchase** → Questions about buying licenses / Premium\n"
+            "🛠️ **Support** → Technical problems with the app\n"
+            "💬 **General** → Other questions\n\n"
+            "Please only open one ticket at a time."
+        ),
         color=0x5865F2
     )
+    embed.set_footer(text="3ncrÿp†× Support System")
+
     await interaction.channel.send(embed=embed, view=TicketView())
     await interaction.response.send_message("✅ Ticket panel sent!", ephemeral=True)
- 
- 
+
+
 @bot.tree.command(name="close", description="Close the current ticket")
 async def close_ticket(interaction: discord.Interaction):
     if not interaction.channel.topic or not interaction.channel.topic.startswith("ticket-"):
         return await interaction.response.send_message("This is not a ticket channel.", ephemeral=True)
-    await interaction.response.send_message("Closing this ticket in 3 seconds...")
-    await asyncio.sleep(3)
-    await interaction.channel.delete(reason="Ticket closed")
+
+    await interaction.response.send_message("Closing ticket in 5 seconds...")
+    await interaction.channel.delete(delay=5)
  
 # ========== DOWNLOAD PANEL ==========
  
